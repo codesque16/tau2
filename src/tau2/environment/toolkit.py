@@ -134,6 +134,12 @@ class ToolKitBase(metaclass=ToolKitType):
         """Get the hash of the database."""
         return get_dict_hash(self.db.model_dump())
 
+    def get_db_state(self) -> Optional[dict]:
+        """Get the current database state as a JSON-serializable dict. Returns None if no db."""
+        if self.db is None:
+            return None
+        return self.db.model_dump()
+
 
 class ToolSignature(BaseModel):
     """A signature of a tool."""

@@ -7,6 +7,8 @@ from tau2.data_model.simulation import DBCheck, EnvAssertionCheck, RewardInfo
 from tau2.data_model.tasks import RewardType, Task
 from tau2.environment.environment import Environment
 from tau2.evaluator.evaluator_base import EvaluatorBase
+from tau2.logfire_setup import is_logfire_enabled
+from tau2.utils.utils import dict_diff_for_logging
 
 
 class EnvironmentEvaluator(EvaluatorBase):
@@ -91,7 +93,12 @@ class EnvironmentEvaluator(EvaluatorBase):
             message_history=message_history,
         )
         golden_actions = task.evaluation_criteria.actions or []
-        for action in golden_actions:
+        for step_index, action in enumerate(golden_actions):
+            agent_db_before_gold = (
+                gold_environment.get_agent_db_state()
+                if gold_environment.tools is not None
+                else None
+            )
             try:
                 gold_environment.make_tool_call(
                     tool_name=action.name,
@@ -102,6 +109,30 @@ class EnvironmentEvaluator(EvaluatorBase):
                 logger.warning(
                     f"Error in golden actions {action.name}({action.arguments}): {e}"
                 )
+            # Log each golden action's effect on agent DB to Logfire
+            if (
+                is_logfire_enabled()
+                and agent_db_before_gold is not None
+                and gold_environment.tools is not None
+            ):
+                try:
+                    import logfire
+
+                    agent_db_after_gold = gold_environment.get_agent_db_state()
+                    diff = dict_diff_for_logging(
+                        agent_db_before_gold, agent_db_after_gold
+                    )
+                    with logfire.span(
+                        "agent_db_updated_gold",
+                        task_id=task.id,
+                        step_index=step_index,
+                        tool_name=action.name,
+                        tool_arguments=action.arguments,
+                        agent_db_diff=diff,
+                    ):
+                        pass
+                except Exception:
+                    pass
 
         # Comparing the environments
         agent_db_hash = gold_environment.get_db_hash()
@@ -116,6 +147,51 @@ class EnvironmentEvaluator(EvaluatorBase):
         else:
             db_reward = 0.0
             db_match = False
+            # Log which side failed for debugging (agent vs user DB)
+            if not agent_db_match:
+                logger.debug(
+                    f"DB check: agent DB mismatch (task_id={task.id})"
+                )
+            if not user_db_match:
+                logger.debug(
+                    f"DB check: user DB mismatch (task_id={task.id})"
+                )
+
+        # Log expected vs predicted DB state and diff to Logfire when enabled
+        if is_logfire_enabled():
+            try:
+                import logfire
+
+                expected_agent_db = gold_environment.get_agent_db_state()
+                expected_user_db = gold_environment.get_user_db_state()
+                predicted_agent_db = predicted_environment.get_agent_db_state()
+                predicted_user_db = predicted_environment.get_user_db_state()
+                agent_db_diff = dict_diff_for_logging(
+                    expected_agent_db, predicted_agent_db
+                )
+                user_db_diff = dict_diff_for_logging(
+                    expected_user_db, predicted_user_db
+                )
+                with logfire.span(
+                    "db_check",
+                    task_id=task.id,
+                    db_match=db_match,
+                    agent_db_match=agent_db_match,
+                    user_db_match=user_db_match,
+                    expected_agent_db_hash=agent_db_hash,
+                    predicted_agent_db_hash=predicted_agent_db_hash,
+                    expected_user_db_hash=user_db_hash,
+                    predicted_user_db_hash=predicted_user_db_hash,
+                    agent_db_diff=agent_db_diff,
+                    user_db_diff=user_db_diff,
+                    expected_agent_db_state=expected_agent_db,
+                    predicted_agent_db_state=predicted_agent_db,
+                    expected_user_db_state=expected_user_db,
+                    predicted_user_db_state=predicted_user_db,
+                ):
+                    pass
+            except Exception:
+                pass
 
         db_check = DBCheck(db_match=db_match, db_reward=db_reward)
 

@@ -1,3 +1,4 @@
+import contextvars
 import json
 import multiprocessing
 import random
@@ -223,6 +224,9 @@ def run_tasks(
     # Set log level from config
     logger.remove()
     logger.add(lambda msg: print(msg), level=log_level)
+    from tau2.logfire_setup import add_loguru_handler, is_logfire_enabled
+
+    add_loguru_handler(log_level=log_level)
     if len(tasks) == 0:
         raise ValueError("No tasks to run")
     if num_trials <= 0:
@@ -354,22 +358,139 @@ def run_tasks(
         )
         ConsoleDisplay.console.print(console_text)
         try:
-            simulation = run_task(
-                domain=domain,
-                task=task,
-                agent=agent,
-                user=user,
-                llm_agent=llm_agent,
-                llm_args_agent=llm_args_agent,
-                llm_user=llm_user,
-                llm_args_user=llm_args_user,
-                max_steps=max_steps,
-                max_errors=max_errors,
-                evaluation_type=evaluation_type,
-                seed=seed,
-                enforce_communication_protocol=enforce_communication_protocol,
-            )
-            simulation.trial = trial
+            if is_logfire_enabled():
+                import logfire
+
+                with logfire.span(
+                    f"Task {task.id}",
+                    task_id=task.id,
+                    trial=trial,
+                    seed=seed,
+                ):
+                    # Task details: description and expected actions/results
+                    task_details = {
+                        "description": (
+                            task.description.model_dump()
+                            if task.description is not None
+                            else None
+                        ),
+                        "expected_actions": (
+                            [
+                                {"name": a.name, "requestor": a.requestor}
+                                for a in (task.evaluation_criteria.actions or [])
+                            ]
+                            if task.evaluation_criteria is not None
+                            else None
+                        ),
+                        "expected_env_assertions": (
+                            len(task.evaluation_criteria.env_assertions or [])
+                            if task.evaluation_criteria is not None
+                            else 0
+                        ),
+                        "expected_communicate": (
+                            task.evaluation_criteria.communicate_info
+                            if task.evaluation_criteria is not None
+                            else None
+                        ),
+                    }
+                    with logfire.span(
+                        "task_details",
+                        **{k: v for k, v in task_details.items() if v is not None},
+                    ):
+                        pass
+
+                    # Simulation: run_task (LLM calls happen inside and nest here)
+                    with logfire.span("simulation"):
+                        simulation = run_task(
+                            domain=domain,
+                            task=task,
+                            agent=agent,
+                            user=user,
+                            llm_agent=llm_agent,
+                            llm_args_agent=llm_args_agent,
+                            llm_user=llm_user,
+                            llm_args_user=llm_args_user,
+                            max_steps=max_steps,
+                            max_errors=max_errors,
+                            evaluation_type=evaluation_type,
+                            seed=seed,
+                            enforce_communication_protocol=enforce_communication_protocol,
+                        )
+                    simulation.trial = trial
+
+                    # Evaluation: reward and what went right/wrong
+                    ri = simulation.reward_info
+                    eval_attrs = {
+                        "reward": ri.reward if ri else None,
+                        "reward_breakdown": (
+                            {k.value: v for k, v in ri.reward_breakdown.items()}
+                            if ri and ri.reward_breakdown
+                            else None
+                        ),
+                        "termination_reason": simulation.termination_reason.value,
+                        "duration_s": round(simulation.duration, 2),
+                    }
+                    if ri:
+                        if ri.action_checks:
+                            eval_attrs["action_checks"] = [
+                                {
+                                    "name": c.action.name,
+                                    "reward": c.action_reward,
+                                    "passed": c.action_match,
+                                    **(
+                                        {
+                                            "failure_reason": getattr(
+                                                c, "failure_reason", None
+                                            ),
+                                            "expected_arguments": getattr(
+                                                c, "expected_arguments", None
+                                            ),
+                                            "actual_arguments": getattr(
+                                                c, "actual_arguments", None
+                                            ),
+                                        }
+                                        if not c.action_match
+                                        else {}
+                                    ),
+                                }
+                                for c in ri.action_checks
+                            ]
+                        if ri.env_assertions:
+                            eval_attrs["env_assertions"] = [
+                                {"met": c.met, "reward": c.reward}
+                                for c in ri.env_assertions
+                            ]
+                        if ri.communicate_checks:
+                            eval_attrs["communicate_checks"] = [
+                                {"info": c.info, "met": c.met}
+                                for c in ri.communicate_checks
+                            ]
+                        if ri.nl_assertions:
+                            eval_attrs["nl_assertions"] = [
+                                {"nl_assertion": c.nl_assertion, "met": c.met}
+                                for c in ri.nl_assertions
+                            ]
+                        if ri.info:
+                            eval_attrs["info"] = ri.info
+                    with logfire.span("evaluation", **eval_attrs):
+                        pass
+            else:
+                simulation = run_task(
+                    domain=domain,
+                    task=task,
+                    agent=agent,
+                    user=user,
+                    llm_agent=llm_agent,
+                    llm_args_agent=llm_args_agent,
+                    llm_user=llm_user,
+                    llm_args_user=llm_args_user,
+                    max_steps=max_steps,
+                    max_errors=max_errors,
+                    evaluation_type=evaluation_type,
+                    seed=seed,
+                    enforce_communication_protocol=enforce_communication_protocol,
+                )
+                simulation.trial = trial
             if console_display:
                 ConsoleDisplay.display_simulation(simulation, show_details=False)
             _save(simulation)
@@ -391,9 +512,43 @@ def run_tasks(
             progress_str = f"{i}/{len(tasks)} (trial {trial + 1}/{num_trials})"
             args.append((task, trial, seeds[trial], progress_str))
 
-    with ThreadPoolExecutor(max_workers=max_concurrency) as executor:
-        res = list(executor.map(_run, *zip(*args)))
-        simulation_results.simulations.extend(res)
+    if is_logfire_enabled():
+        import logfire
+
+        # Top-level span name: tau2_<agent_llm>_<user_llm> (sanitized for span names)
+        _agent = (llm_agent or "default").replace("/", "_").replace(".", "_")
+        _user = (llm_user or "default").replace("/", "_").replace(".", "_")
+        span_name = f"tau2_{_agent}_{_user}"
+
+        with logfire.span(
+            span_name,
+            domain=domain,
+            num_tasks=len(tasks),
+            num_trials=num_trials,
+            task_ids=[t.id for t in tasks[:5]],
+        ):
+            # Copy context per run so each worker has its own; a Context can only
+            # be entered in one thread at a time.
+            def run_in_context(*item):
+                ctx = contextvars.copy_context()
+                return ctx.run(_run, *item)
+
+            with ThreadPoolExecutor(max_workers=max_concurrency) as executor:
+                futures = [
+                    executor.submit(run_in_context, *item) for item in args
+                ]
+                res = [f.result() for f in futures]
+            simulation_results.simulations.extend(res)
+
+            # Final evaluation results (inside top-level span)
+            metrics = compute_metrics(simulation_results)
+            with logfire.span("final_evaluation_results", **metrics.as_dict()):
+                pass
+    else:
+        with ThreadPoolExecutor(max_workers=max_concurrency) as executor:
+            res = list(executor.map(_run, *zip(*args)))
+            simulation_results.simulations.extend(res)
+
     ConsoleDisplay.console.print(
         "\n✨ [bold green]Successfully completed all simulations![/bold green]\n"
         "To review the simulations, run: [bold blue]tau2 view[/bold blue]"

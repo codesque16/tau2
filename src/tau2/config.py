@@ -41,5 +41,10 @@ REDIS_CACHE_TTL = 60 * 60 * 24 * 30
 # LANGFUSE
 USE_LANGFUSE = False  # If True, make sure all the env variables are set for langfuse.
 
+# LOGFIRE (Pydantic observability: https://logfire-us.pydantic.dev)
+# Set LOGFIRE_TOKEN from project setup, or run: logfire auth
+USE_LOGFIRE = True
+LOGFIRE_SCRUBBING = False
+LOGFIRE_TOKEN = "pylf_v1_us_pkhMwRCBm4sWrKtSrn45W7rdc0GVfZPJPKXQv1VP7LTK"
 # API
 API_PORT = 8000

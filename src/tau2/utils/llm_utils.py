@@ -3,7 +3,7 @@ import re
 from typing import Any, Optional
 
 import litellm
-from litellm import completion, completion_cost
+from litellm import completion_cost
 from litellm.caching.caching import Cache
 from litellm.main import ModelResponse, Usage
 from loguru import logger
@@ -29,6 +29,7 @@ from tau2.data_model.message import (
     UserMessage,
 )
 from tau2.environment.tool import Tool
+from tau2.logfire_setup import is_logfire_enabled
 
 # litellm._turn_on_debug()
 
@@ -182,6 +183,8 @@ def generate(
     messages: list[Message],
     tools: Optional[list[Tool]] = None,
     tool_choice: Optional[str] = None,
+    *,
+    caller: Optional[str] = None,
     **kwargs: Any,
 ) -> UserMessage | AssistantMessage:
     """
@@ -192,6 +195,7 @@ def generate(
         messages: The messages to send to the model.
         tools: The tools to use.
         tool_choice: The tool choice to use.
+        caller: Optional label for Logfire spans (e.g. "agent", "user").
         **kwargs: Additional arguments to pass to the model.
 
     Returns: A tuple containing the message and the cost.
@@ -206,13 +210,29 @@ def generate(
     if tools and tool_choice is None:
         tool_choice = "auto"
     try:
-        response = completion(
-            model=model,
-            messages=litellm_messages,
-            tools=tools,
-            tool_choice=tool_choice,
-            **kwargs,
-        )
+        # Call via module so Logfire's instrument_litellm() patch is always used
+        def _do_completion():
+            return litellm.completion(
+                model=model,
+                messages=litellm_messages,
+                tools=tools,
+                tool_choice=tool_choice,
+                **kwargs,
+            )
+
+        if is_logfire_enabled():
+            import logfire
+
+            span_name = f"llm_completion_{caller}" if caller else "llm_completion"
+            with logfire.span(
+                span_name,
+                model=model,
+                num_messages=len(litellm_messages),
+                has_tools=tools is not None,
+            ):
+                response = _do_completion()
+        else:
+            response = _do_completion()
     except Exception as e:
         logger.error(e)
         raise e
@@ -230,6 +250,16 @@ def generate(
         "The response should be an assistant message"
     )
     content = response.message.content
+    # Some APIs return content as a list of parts (e.g. multimodal)
+    if isinstance(content, list):
+        content = (
+            " ".join(
+                part.get("text", part.get("content", ""))
+                for part in content
+                if isinstance(part, dict)
+            ).strip()
+            or None
+        )
     tool_calls = response.message.tool_calls or []
     tool_calls = [
         ToolCall(
@@ -249,6 +279,12 @@ def generate(
         usage=usage,
         raw_data=response.to_dict(),
     )
+    # Some models (e.g. gemini-2.5-flash-lite) occasionally return empty responses
+    if not message.has_text_content() and not message.is_tool_call():
+        logger.warning(
+            "Model returned no content or tool calls; using placeholder to avoid validation error"
+        )
+        message.content = "(Model returned no content or tool calls)"
     return message
 
 

@@ -260,6 +260,24 @@ class Environment:
             return None
         return self.user_tools.get_db_hash()
 
+    def get_agent_db_state(self) -> Optional[dict]:
+        """
+        Get the current agent database state as a JSON-serializable dict.
+        Returns None if the database is not available.
+        """
+        if self.tools is None:
+            return None
+        return self.tools.get_db_state()
+
+    def get_user_db_state(self) -> Optional[dict]:
+        """
+        Get the current user database state as a JSON-serializable dict.
+        Returns None if the database is not available.
+        """
+        if self.user_tools is None:
+            return None
+        return self.user_tools.get_db_state()
+
     def set_state(
         self,
         initialization_data: Optional[InitializationData],
@@ -395,6 +413,11 @@ class Environment:
         Returns:
             The response of the tool call.
         """
+        # Snapshot agent DB before call (for logging when assistant tools change it)
+        agent_db_before = None
+        if message.requestor == "assistant" and self.tools is not None:
+            agent_db_before = self.get_agent_db_state()
+
         error = False
         try:
             resp = self.make_tool_call(
@@ -404,6 +427,35 @@ class Environment:
         except Exception as e:
             resp = f"Error: {e}"
             error = True
+
+        # Log to Logfire when an assistant tool call changed the agent DB
+        if (
+            message.requestor == "assistant"
+            and agent_db_before is not None
+            and self.tools is not None
+        ):
+            agent_db_after = self.get_agent_db_state()
+            if agent_db_before != agent_db_after:
+                try:
+                    from tau2.logfire_setup import is_logfire_enabled
+                    from tau2.utils.utils import dict_diff_for_logging
+
+                    if is_logfire_enabled():
+                        import logfire
+
+                        diff = dict_diff_for_logging(
+                            agent_db_before, agent_db_after
+                        )
+                        with logfire.span(
+                            "agent_db_updated",
+                            tool_name=message.name,
+                            tool_arguments=message.arguments,
+                            agent_db_diff=diff,
+                        ):
+                            pass
+                except Exception:  # do not break evaluation on logging failure
+                    pass
+
         logger.debug(f"Response: {resp}")
         resp = self.to_json_str(resp)
         return ToolMessage(

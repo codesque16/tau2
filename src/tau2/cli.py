@@ -16,12 +16,16 @@ from tau2.config import (
     DEFAULT_USER_IMPLEMENTATION,
 )
 from tau2.data_model.simulation import RunConfig
-from tau2.run import get_options, run_domain
 from tau2.scripts.leaderboard.verify_trajectories import VerificationMode
+
+# tau2.run (and thus litellm) is imported in main() AFTER init_logfire() so that
+# logfire.instrument_litellm() runs before litellm is first loaded.
 
 
 def add_run_args(parser):
-    """Add run arguments to a parser."""
+    """Add run arguments to a parser. Requires get_options from tau2.run (set in main())."""
+    from tau2.run import get_options
+
     domains = get_options().domains
     parser.add_argument(
         "--domain",
@@ -144,6 +148,12 @@ def add_run_args(parser):
 
 
 def main():
+    from tau2.logfire_setup import flush_logfire, init_logfire
+
+    init_logfire()
+    # Import run (and thus litellm) only after Logfire is configured and litellm instrumented
+    from tau2.run import get_options, run_domain
+
     parser = argparse.ArgumentParser(description="Tau2 command line interface")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
@@ -312,6 +322,7 @@ def main():
         return
 
     args.func(args)
+    flush_logfire()
 
 
 def run_view_simulations(args):

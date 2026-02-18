@@ -52,6 +52,46 @@ def show_dict_diff(dict1: dict, dict2: dict) -> str:
     return diff
 
 
+def _make_diff_serializable(obj):
+    """Recursively convert diff output to JSON-serializable form (sets -> lists)."""
+    if isinstance(obj, dict):
+        return {k: _make_diff_serializable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_make_diff_serializable(v) for v in obj]
+    if isinstance(obj, set):
+        return [_make_diff_serializable(v) for v in sorted(obj, key=str)]
+    if hasattr(obj, "__iter__") and not isinstance(obj, (str, bytes)):
+        try:
+            return [_make_diff_serializable(v) for v in obj]
+        except TypeError:
+            pass
+    return obj
+
+
+def dict_diff_for_logging(
+    expected: dict | None, predicted: dict | None
+) -> dict | None:
+    """
+    Return a JSON-serializable diff between two dicts for use in logging (e.g. Logfire).
+    Returns None if both are None. Handles None expected or predicted.
+    """
+    if expected is None and predicted is None:
+        return None
+    if expected is None:
+        return {
+            "note": "expected is None",
+            "predicted_keys": list(predicted.keys()) if predicted else [],
+        }
+    if predicted is None:
+        return {
+            "note": "predicted is None",
+            "expected_keys": list(expected.keys()) if expected else [],
+        }
+    diff = DeepDiff(expected, predicted).to_dict()
+    diff = _make_diff_serializable(diff)
+    return json.loads(json.dumps(diff, default=str))
+
+
 def get_now() -> str:
     """
     Returns the current date and time in the format YYYYMMDD_HHMMSS.

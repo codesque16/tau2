@@ -107,8 +107,9 @@ class LLMAgent(LocalAgent[LLMAgentState]):
         messages = state.system_messages + state.messages
         assistant_message = generate(
             model=self.llm,
-            tools=self.tools,
             messages=messages,
+            tools=self.tools,
+            caller="agent",
             **self.llm_args,
         )
         state.messages.append(assistant_message)
