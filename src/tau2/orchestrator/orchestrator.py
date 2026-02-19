@@ -21,7 +21,7 @@ from tau2.data_model.tasks import EnvFunctionCall, InitializationData, Task
 from tau2.environment.environment import Environment, EnvironmentInfo
 from tau2.user.base import BaseUser, UserError, is_valid_user_history_message
 from tau2.user.user_simulator import DummyUser, UserSimulator, UserState
-from tau2.utils.llm_utils import get_cost
+from tau2.utils.llm_utils import get_cost, get_cost_cache_aware
 from tau2.utils.utils import format_time, get_now
 
 
@@ -431,6 +431,7 @@ class Orchestrator:
             agent_cost, user_cost = None, None
         else:
             agent_cost, user_cost = res
+        agent_cost_cache_aware, _ = get_cost_cache_aware(messages)
         simulation_run = SimulationRun(
             id=str(uuid.uuid4()),
             task_id=self.task.id,
@@ -441,6 +442,7 @@ class Orchestrator:
             reward_info=None,
             user_cost=user_cost,
             agent_cost=agent_cost,
+            agent_cost_cache_aware=agent_cost_cache_aware,
             messages=messages,
             seed=self.seed,
         )

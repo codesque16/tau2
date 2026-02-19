@@ -21,7 +21,7 @@ from tau2.data_model.tasks import Task
 from tau2.environment.environment import Environment, EnvironmentInfo
 from tau2.evaluator.evaluator import EvaluationType, evaluate_simulation
 from tau2.gym.gym_agent import GymAgent
-from tau2.metrics.agent_metrics import compute_metrics
+from tau2.metrics.agent_metrics import compute_metrics, is_successful
 from tau2.orchestrator.orchestrator import Orchestrator
 from tau2.registry import RegistryInfo, registry
 from tau2.user.user_simulator import DummyUser, get_global_user_sim_guidelines
@@ -420,7 +420,22 @@ def run_tasks(
 
                     # Evaluation: reward and what went right/wrong
                     ri = simulation.reward_info
+                    # Tag Task span with pass "1" (green) or "0" (red) for UI filtering/coloring
+                    pass_tag = (
+                        "1"
+                        if ri and is_successful(ri.reward)
+                        else "0"
+                    )
+                    try:
+                        from opentelemetry import trace
+                        trace.get_current_span().set_attribute("pass", pass_tag)
+                        trace.get_current_span().set_attribute(
+                            "tau2.outcome", "ok" if pass_tag == "1" else "error"
+                        )
+                    except Exception:
+                        pass
                     eval_attrs = {
+                        "pass": pass_tag,
                         "reward": ri.reward if ri else None,
                         "reward_breakdown": (
                             {k.value: v for k, v in ri.reward_breakdown.items()}
@@ -542,6 +557,22 @@ def run_tasks(
 
             # Final evaluation results (inside top-level span)
             metrics = compute_metrics(simulation_results)
+            # Set overall span attributes for quick view: pass^1, avg agent cost, avg agent cost (caching)
+            try:
+                from opentelemetry import trace
+                span = trace.get_current_span()
+                span.set_attribute(
+                    "pass_hat_1",
+                    float(metrics.pass_hat_ks.get(1, 0.0)),
+                )
+                span.set_attribute("avg_agent_cost_per_task", float(metrics.avg_agent_cost))
+                if metrics.avg_agent_cost_cache_aware is not None:
+                    span.set_attribute(
+                        "avg_agent_cost_cache_aware_per_task",
+                        float(metrics.avg_agent_cost_cache_aware),
+                    )
+            except Exception:
+                pass
             with logfire.span("final_evaluation_results", **metrics.as_dict()):
                 pass
     else:

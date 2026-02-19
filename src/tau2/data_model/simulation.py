@@ -342,6 +342,10 @@ class SimulationRun(BaseModel):
     agent_cost: Optional[float] = Field(
         description="The cost of the agent.", default=None
     )
+    agent_cost_cache_aware: Optional[float] = Field(
+        description="Agent cost when charging only cache-creation (input) + completion (output) tokens; no charge for cache read.",
+        default=None,
+    )
     user_cost: Optional[float] = Field(
         description="The cost of the user.", default=None
     )
@@ -431,6 +435,7 @@ class Results(BaseModel):
                 "seed": sim.seed,
                 "reward": sim.reward_info.reward,
                 "agent_cost": sim.agent_cost,
+                "agent_cost_cache_aware": sim.agent_cost_cache_aware,
                 "user_cost": sim.user_cost,
                 "termination_reason": sim.termination_reason,
                 "duration": sim.duration,

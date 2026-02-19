@@ -1,5 +1,6 @@
 import math
 import re
+from typing import Optional
 
 import pandas as pd
 from loguru import logger
@@ -19,11 +20,13 @@ class AgentMetrics(BaseModel):
     avg_reward: float
     pass_hat_ks: dict[int, float]
     avg_agent_cost: float
+    avg_agent_cost_cache_aware: Optional[float] = None
 
     def as_dict(self) -> dict:
         data = {
             "avg_reward": self.avg_reward,
             "avg_agent_cost": self.avg_agent_cost,
+            "avg_agent_cost_cache_aware": self.avg_agent_cost_cache_aware,
         }
         for k, v in self.pass_hat_ks.items():
             data[f"pass_hat_{k}"] = v
@@ -116,10 +119,15 @@ def compute_metrics(results: Results) -> AgentMetrics:
             k = int(match.group(1))
             pass_hat_ks[k] = df_pass_hat_k[column].mean()
     avg_agent_cost = df.agent_cost.mean()
+    aca = df.get("agent_cost_cache_aware")
+    avg_agent_cost_cache_aware = (
+        aca.mean() if aca is not None and aca.notna().any() else None
+    )
     return AgentMetrics(
         avg_reward=avg_reward,
         pass_hat_ks=pass_hat_ks,
         avg_agent_cost=avg_agent_cost,
+        avg_agent_cost_cache_aware=avg_agent_cost_cache_aware,
     )
 
 

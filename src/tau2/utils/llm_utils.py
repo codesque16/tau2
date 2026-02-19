@@ -349,6 +349,28 @@ def get_cost(messages: list[Message]) -> tuple[float, float] | None:
     return agent_cost, user_cost
 
 
+def get_cost_cache_aware(messages: list[Message]) -> tuple[float | None, float | None]:
+    """
+    Get the cache-aware cost (input cache-creation + output tokens only) for agent and user.
+    Returns (agent_cost_cache_aware, user_cost_cache_aware); either can be None if unavailable.
+    """
+    agent_cost = 0.0
+    user_cost = 0.0
+    has_any = False
+    for message in messages:
+        if isinstance(message, ToolMessage):
+            continue
+        if message.cost_cache_aware is not None:
+            has_any = True
+            if isinstance(message, AssistantMessage):
+                agent_cost += message.cost_cache_aware
+            elif isinstance(message, UserMessage):
+                user_cost += message.cost_cache_aware
+    if not has_any:
+        return None, None
+    return agent_cost, user_cost
+
+
 def get_token_usage(messages: list[Message]) -> dict:
     """
     Get the token usage of the interaction between the agent and the user.
