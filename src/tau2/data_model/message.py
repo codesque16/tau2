@@ -100,6 +100,10 @@ class ParticipantMessageBase(BaseModel):
         description="The timestamp of the message.", default_factory=get_now
     )
     cost: Optional[float] = Field(description="The cost of the message.", default=None)
+    cost_cache_aware: Optional[float] = Field(
+        description="Cost when charging only cache_creation_tokens (input) + completion_tokens (output); no charge for cache read.",
+        default=None,
+    )
 
     usage: Optional[dict] = Field(
         description="The token usage of the message.", default=None

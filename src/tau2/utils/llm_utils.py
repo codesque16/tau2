@@ -3,7 +3,7 @@ import re
 from typing import Any, Optional
 
 import litellm
-from litellm import completion_cost
+from litellm import completion_cost, cost_per_token
 from litellm.caching.caching import Cache
 from litellm.main import ModelResponse, Usage
 from loguru import logger
@@ -88,7 +88,7 @@ def _parse_ft_model_name(model: str) -> str:
 
 def get_response_cost(response: ModelResponse) -> float:
     """
-    Get the cost of the response from the litellm completion.
+    Get the cost of the response from the litellm completion (unchanged: full billing).
     """
     response.model = _parse_ft_model_name(
         response.model
@@ -101,14 +101,52 @@ def get_response_cost(response: ModelResponse) -> float:
     return cost
 
 
+def get_response_cost_cache_aware(response: ModelResponse) -> Optional[float]:
+    """
+    Cost charging only cache_creation_tokens at input price and completion_tokens at output price.
+    Does not charge cache read (cached_tokens). Returns None when usage has no cache breakdown.
+    """
+    usage: Optional[Usage] = response.get("usage")
+    if usage is None:
+        return None
+    details = getattr(usage, "prompt_tokens_details", None)
+    if details is None:
+        return None
+    cache_creation = getattr(details, "cache_creation_tokens", None)
+    if cache_creation is None:
+        return None
+    model = _parse_ft_model_name(response.model)
+    comp = usage.completion_tokens or 0
+    try:
+        input_cost, output_cost = cost_per_token(
+            model=model,
+            prompt_tokens=cache_creation,
+            completion_tokens=comp,
+        )
+        return input_cost + output_cost
+    except Exception as e:
+        logger.debug("cache-aware cost: %s", e)
+        return None
+
+
 def get_response_usage(response: ModelResponse) -> Optional[dict]:
     usage: Optional[Usage] = response.get("usage")
     if usage is None:
         return None
-    return {
+    out: dict[str, Any] = {
         "completion_tokens": usage.completion_tokens,
         "prompt_tokens": usage.prompt_tokens,
     }
+    # Include cache-related token counts when present (e.g. Gemini, Anthropic)
+    details = getattr(usage, "prompt_tokens_details", None)
+    if details is not None:
+        cached = getattr(details, "cached_tokens", None)
+        if cached is not None:
+            out["cached_tokens"] = cached  # cache read
+        cache_creation = getattr(details, "cache_creation_tokens", None)
+        if cache_creation is not None:
+            out["cache_creation_tokens"] = cache_creation  # cache input (written)
+    return out
 
 
 def to_tau2_messages(
@@ -237,6 +275,7 @@ def generate(
         logger.error(e)
         raise e
     cost = get_response_cost(response)
+    cost_cache_aware = get_response_cost_cache_aware(response)
     usage = get_response_usage(response)
     response = response.choices[0]
     try:
@@ -276,6 +315,7 @@ def generate(
         content=content,
         tool_calls=tool_calls,
         cost=cost,
+        cost_cache_aware=cost_cache_aware,
         usage=usage,
         raw_data=response.to_dict(),
     )
