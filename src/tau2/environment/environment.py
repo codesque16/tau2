@@ -1,4 +1,5 @@
 import json
+import time
 from copy import deepcopy
 from datetime import date, datetime
 from typing import Any, Literal, Optional
@@ -413,6 +414,13 @@ class Environment:
         Returns:
             The response of the tool call.
         """
+        t0 = time.perf_counter()
+        logger.info(
+            "[tau2.tool] get_response start: name=%s requestor=%s args=%s",
+            message.name,
+            message.requestor,
+            message.arguments,
+        )
         # Snapshot agent DB before call (for logging when assistant tools change it)
         agent_db_before = None
         if message.requestor == "assistant" and self.tools is not None:
@@ -423,8 +431,15 @@ class Environment:
             resp = self.make_tool_call(
                 message.name, requestor=message.requestor, **message.arguments
             )
+            logger.debug("[tau2.tool] make_tool_call done: name=%s", message.name)
             self.sync_tools()
+            logger.debug("[tau2.tool] sync_tools done: name=%s", message.name)
         except Exception as e:
+            logger.warning(
+                "[tau2.tool] get_response exception: name=%s error=%s",
+                message.name,
+                e,
+            )
             resp = f"Error: {e}"
             error = True
 
@@ -456,6 +471,14 @@ class Environment:
                 except Exception:  # do not break evaluation on logging failure
                     pass
 
+        elapsed = time.perf_counter() - t0
+        logger.info(
+            "[tau2.tool] get_response done: name=%s requestor=%s error=%s duration_s=%.3f",
+            message.name,
+            message.requestor,
+            error,
+            elapsed,
+        )
         logger.debug(f"Response: {resp}")
         resp = self.to_json_str(resp)
         return ToolMessage(

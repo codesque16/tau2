@@ -483,6 +483,11 @@ class Orchestrator:
         elif (
             self.from_role == Role.USER or self.from_role == Role.ENV
         ) and self.to_role == Role.AGENT:
+            if isinstance(self.message, MultiToolMessage):
+                logger.info(
+                    "[tau2.tool] Sending %d tool result(s) to agent, calling generate_next_message (LLM completion next)",
+                    len(self.message.tool_messages),
+                )
             agent_msg, self.agent_state = self.agent.generate_next_message(
                 self.message, self.agent_state
             )
@@ -505,11 +510,33 @@ class Orchestrator:
         elif self.from_role in [Role.AGENT, Role.USER] and self.to_role == Role.ENV:
             if not self.message.is_tool_call():
                 raise ValueError("Agent or User should send tool call to environment")
+            tool_calls = self.message.tool_calls
+            n_tools = len(tool_calls)
+            logger.info(
+                "[tau2.tool] Executing %d tool call(s) (step %d)",
+                n_tools,
+                self.step_count + 1,
+            )
             tool_msgs = []
-            for tool_call in self.message.tool_calls:
+            for i, tool_call in enumerate(tool_calls):
+                logger.info(
+                    "[tau2.tool] Executing tool call %d/%d: name=%s id=%s args=%s",
+                    i + 1,
+                    n_tools,
+                    tool_call.name,
+                    tool_call.id or "(no id)",
+                    tool_call.arguments,
+                )
                 tool_msg = self.environment.get_response(tool_call)
                 if tool_msg.error:
                     self.num_errors += 1
+                logger.info(
+                    "[tau2.tool] Finished tool call %d/%d: name=%s error=%s",
+                    i + 1,
+                    n_tools,
+                    tool_call.name,
+                    tool_msg.error,
+                )
                 tool_msgs.append(tool_msg)
             assert len(self.message.tool_calls) == len(
                 tool_msgs
